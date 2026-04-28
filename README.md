@@ -263,6 +263,72 @@ After deployment, go to the Resource Group → open each API connection:
 >   - Apply assignment groups, categorization, SLAs, and dedup/correlation rules
 >   - Ensure the connector identity has least-privilege access to only the required table/fields
 
+##### Enriched incident example (payload you can map in ServiceNow)
+
+Inside the workflow, the ServiceNow action runs within the `For each enriched incident` loop. The object available there is the **enriched incident**: the Microsoft Graph incident details (with alerts expanded) plus an extra `tasks` property added by the workflow.
+
+Use this shape to understand what you can map into ServiceNow fields (severity, category, MITRE, etc.). Your tenant’s Graph alert schema can vary by product and API version, so treat this as an example and confirm the exact properties in your Logic App run history.
+
+Example (simplified):
+
+```json
+{
+  "id": "12345678",
+  "displayName": "Suspicious inbox rule created",
+  "severity": "high",
+  "status": "active",
+  "assignedTo": "",
+  "createdDateTime": "2026-04-28T09:30:00Z",
+  "lastUpdateDateTime": "2026-04-28T09:44:00Z",
+  "incidentWebUrl": "https://security.microsoft.com/incidents/12345678",
+  "systemTags": ["defenderExperts"],
+  "summary": "<incident summary html/text>",
+  "alerts": [
+    {
+      "id": "da637b0c-...",
+      "title": "Inbox rule created to forward mail",
+      "severity": "high",
+      "status": "active",
+      "category": "SuspiciousActivity",
+      "productName": "Microsoft Defender for Office 365",
+      "alertWebUrl": "https://security.microsoft.com/alerts/...",
+
+      "mitreTechniques": ["T1114"],
+      "mitreTactics": ["Collection"],
+
+      "recommendedActions": "<string or array depending on alert type>",
+      "description": "<alert description>"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "task-001",
+      "displayName": "Containment action requested",
+      "description": "Defender Experts requested ...",
+      "status": "open",
+      "actionType": "text",
+      "source": "defenderExpertsGuidedResponse",
+      "lastModifiedByDisplayName": "Defender Experts",
+      "lastModifiedDateTime": "2026-04-28T09:42:00Z",
+      "responseAction": {
+        "identifierValue": "user@contoso.com"
+      },
+      "incident": {
+        "id": "12345678"
+      }
+    }
+  ]
+}
+```
+
+Common mapping examples (in the ServiceNow action body):
+
+- Defender incident severity: `items('For_each_enriched_incident')?['severity']`
+- Defender incident URL: `items('For_each_enriched_incident')?['incidentWebUrl']`
+- First alert category/product: `first(items('For_each_enriched_incident')?['alerts'])?['category']` / `first(items('For_each_enriched_incident')?['alerts'])?['productName']`
+
+If you want to map MITRE tactics/techniques, first confirm which properties exist on the alert objects in your environment (for example `mitreTechniques`, `mitreTactics`, or similar fields), then aggregate them across `alerts`.
+
 ### 4) Enable the workflow
 
 The workflow deploys **Disabled**.
