@@ -1,0 +1,711 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "location": {
+            "type": "string",
+            "defaultValue": "[resourceGroup().location]"
+        },
+        "workflowName": {
+            "type": "string",
+            "defaultValue": "GetDefenderExpertsTasks",
+            "metadata": {
+                "description": "Name of the Logic App workflow to create"
+            }
+        },
+        "storageAccountName": {
+            "type": "string",
+            "metadata": {
+                "description": "Name of the storage account that hosts the DefenderIncidentTasksProcessed table"
+            }
+        },
+        "azureTablesConnectionName": {
+            "type": "string",
+            "defaultValue": "azuretables",
+            "metadata": {
+                "description": "Name of the Azure Tables connection resource"
+            }
+        },
+        "office365ConnectionName": {
+            "type": "string",
+            "defaultValue": "office365",
+            "metadata": {
+                "description": "Name of the Office 365 (Outlook) connection resource"
+            }
+        },
+        "serviceNowConnectionName": {
+            "type": "string",
+            "defaultValue": "service-now",
+            "metadata": {
+                "description": "Name of the ServiceNow connection resource"
+            }
+        }
+    },
+    "variables": {
+        "azureTablesApiId": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', parameters('location'), 'azuretables')]",
+        "office365ApiId": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', parameters('location'), 'office365')]",
+        "serviceNowApiId": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', parameters('location'), 'service-now')]"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Web/connections",
+            "apiVersion": "2018-07-01-preview",
+            "name": "[parameters('azureTablesConnectionName')]",
+            "location": "[parameters('location')]",
+            "properties": {
+                "displayName": "[parameters('azureTablesConnectionName')]",
+                "api": {
+                    "id": "[variables('azureTablesApiId')]"
+                },
+                "parameterValueSet": {
+                    "name": "managedIdentityAuth",
+                    "values": {}
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Web/connections",
+            "apiVersion": "2016-06-01",
+            "name": "[parameters('office365ConnectionName')]",
+            "location": "[parameters('location')]",
+            "properties": {
+                "displayName": "[parameters('office365ConnectionName')]",
+                "api": {
+                    "id": "[variables('office365ApiId')]"
+                },
+                "parameterValues": {}
+            }
+        },
+        {
+            "type": "Microsoft.Web/connections",
+            "apiVersion": "2016-06-01",
+            "name": "[parameters('serviceNowConnectionName')]",
+            "location": "[parameters('location')]",
+            "properties": {
+                "displayName": "[parameters('serviceNowConnectionName')]",
+                "api": {
+                    "id": "[variables('serviceNowApiId')]"
+                },
+                "parameterValues": {}
+            }
+        },
+        {
+            "type": "Microsoft.Logic/workflows",
+            "apiVersion": "2019-05-01",
+            "name": "[parameters('workflowName')]",
+            "location": "[parameters('location')]",
+            "identity": {
+                "type": "SystemAssigned"
+            },
+            "properties": {
+                "state": "Disabled",
+                "definition": {
+                    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                    "contentVersion": "1.0.0.0",
+                    "triggers": {
+                        "Recurrence": {
+                            "type": "Recurrence",
+                            "recurrence": {
+                                "interval": 5,
+                                "frequency": "Minute",
+                                "timeZone": "UTC"
+                            }
+                        }
+                    },
+                    "actions": {
+                        "Initialize_variables": {
+                            "type": "InitializeVariable",
+                            "inputs": {
+                                "variables": [
+                                    {
+                                        "name": "allMrTasks",
+                                        "type": "array"
+                                    },
+                                    {
+                                        "name": "allIncidentsId",
+                                        "type": "array"
+                                    },
+                                    {
+                                        "name": "incidentsWithTasks",
+                                        "type": "array"
+                                    },
+                                    {
+                                        "name": "messageId",
+                                        "type": "string"
+                                    },
+                                    {
+                                        "name": "tasksText",
+                                        "type": "string"
+                                    },
+                                    {
+                                        "name": "alertsText",
+                                        "type": "string"
+                                    },
+                                    {
+                                        "name": "alertsEmailHtml",
+                                        "type": "string"
+                                    },
+                                    {
+                                        "name": "tasksEmailHtml",
+                                        "type": "string"
+                                    },
+                                    {
+                                        "name": "newMrTasks",
+                                        "type": "array"
+                                    },
+                                    {
+                                        "name": "notificationEmail",
+                                        "type": "string",
+                                        "value": "security@mycompany.xyz"
+                                    },
+                                    {
+                                        "name": "incidentTasksBaseFilter",
+                                        "type": "string",
+                                        "value": "(status eq 'open' or status eq 'inProgress')"
+                                    }
+                                ]
+                            },
+                            "runAfter": {}
+                        },
+                        "Get_incidents_details": {
+                            "type": "Scope",
+                            "actions": {
+                                "Compose_TimeWindowStart": {
+                                    "type": "Compose",
+                                    "inputs": "@addMinutes(utcNow(), -15)"
+                                },
+                                "Get_Managed_Responses_Tasks": {
+                                    "type": "Http",
+                                    "inputs": {
+                                        "uri": "https://graph.microsoft.com/beta/security/incidentTasks",
+                                        "method": "GET",
+                                        "headers": {
+                                            "content-type": "application/json"
+                                        },
+                                        "queries": {
+                                            "$filter": "@{concat(variables('incidentTasksBaseFilter'), ' and lastModifiedDateTime ge ', outputs('Compose_TimeWindowStart'))}"
+                                        },
+                                        "authentication": {
+                                            "type": "ManagedServiceIdentity",
+                                            "audience": "https://graph.microsoft.com"
+                                        }
+                                    },
+                                    "runAfter": {
+                                        "Compose_TimeWindowStart": [
+                                            "Succeeded"
+                                        ]
+                                    },
+                                    "runtimeConfiguration": {
+                                        "contentTransfer": {
+                                            "transferMode": "Chunked"
+                                        }
+                                    }
+                                },
+                                "For_each_task_dedupe": {
+                                    "type": "Foreach",
+                                    "foreach": "@body('Get_Managed_Responses_Tasks')?['value']",
+                                    "actions": {
+                                        "Get_Task_Entity": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                                "host": {
+                                                    "connection": {
+                                                        "name": "@parameters('$connections')['azuretables']['connectionId']"
+                                                    }
+                                                },
+                                                "method": "get",
+                                                "path": "/v2/storageAccounts/@{encodeURIComponent(encodeURIComponent(parameters('storageAccountName')))}/tables/@{encodeURIComponent('DefenderIncidentTasksProcessed')}/entities",
+                                                "queries": {
+                                                    "$filter": "@concat('PartitionKey eq ''', string(item()?['incident']?['id']), ''' and RowKey eq ''', string(item()?['id']), '''')"
+                                                }
+                                            }
+                                        },
+                                        "If_new_task": {
+                                            "type": "If",
+                                            "expression": {
+                                                "or": [
+                                                    {
+                                                        "equals": [
+                                                            "@length(coalesce(body('Get_Task_Entity')?['value'], createArray()))",
+                                                            0
+                                                        ]
+                                                    },
+                                                    {
+                                                        "not": {
+                                                            "equals": [
+                                                                "@toLower(coalesce(first(coalesce(body('Get_Task_Entity')?['value'], createArray()))?['Status'], ''))",
+                                                                "completed"
+                                                            ]
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            "actions": {
+                                                "Append_to_newMrTasks": {
+                                                    "type": "AppendToArrayVariable",
+                                                    "inputs": {
+                                                        "name": "newMrTasks",
+                                                        "value": "@items('For_each_task_dedupe')"
+                                                    }
+                                                }
+                                            },
+                                            "else": {
+                                                "actions": {}
+                                            },
+                                            "runAfter": {
+                                                "Get_Task_Entity": [
+                                                    "Succeeded",
+                                                    "Failed"
+                                                ]
+                                            }
+                                        }
+                                    },
+                                    "runtimeConfiguration": {
+                                        "concurrency": {
+                                            "repetitions": 1
+                                        }
+                                    },
+                                    "runAfter": {
+                                        "Get_Managed_Responses_Tasks": [
+                                            "Succeeded"
+                                        ]
+                                    }
+                                },
+                                "Set_allMrTasks": {
+                                    "type": "SetVariable",
+                                    "inputs": {
+                                        "name": "allMrTasks",
+                                        "value": "@variables('newMrTasks')"
+                                    },
+                                    "runAfter": {
+                                        "For_each_task_dedupe": [
+                                            "Succeeded"
+                                        ]
+                                    }
+                                },
+                                "Select_incident_id": {
+                                    "type": "Select",
+                                    "inputs": {
+                                        "from": "@variables('allMrTasks')",
+                                        "select": {
+                                            "id": "@item()?['incident']?['id']"
+                                        }
+                                    },
+                                    "runAfter": {
+                                        "Set_allMrTasks": [
+                                            "Succeeded"
+                                        ]
+                                    }
+                                },
+                                "Dedup_incidents_id": {
+                                    "type": "Compose",
+                                    "inputs": "@union(body('Select_incident_id'), body('Select_incident_id'))",
+                                    "runAfter": {
+                                        "Select_incident_id": [
+                                            "Succeeded"
+                                        ]
+                                    }
+                                },
+                                "Set_allIncidentsId": {
+                                    "type": "SetVariable",
+                                    "inputs": {
+                                        "name": "allIncidentsId",
+                                        "value": "@outputs('Dedup_incidents_id')"
+                                    },
+                                    "runAfter": {
+                                        "Dedup_incidents_id": [
+                                            "Succeeded"
+                                        ]
+                                    }
+                                },
+                                "Compose_incident_details": {
+                                    "type": "Scope",
+                                    "actions": {
+                                        "For_each_incident": {
+                                            "type": "Foreach",
+                                            "foreach": "@variables('allIncidentsId')",
+                                            "actions": {
+                                                "Get_incident_details": {
+                                                    "type": "Http",
+                                                    "inputs": {
+                                                        "uri": "https://graph.microsoft.com/beta/security/incidents/@{items('For_each_incident')?['id']}",
+                                                        "method": "GET",
+                                                        "headers": {
+                                                            "content-type": "application/json"
+                                                        },
+                                                        "queries": {
+                                                            "$expand": "alerts"
+                                                        },
+                                                        "authentication": {
+                                                            "type": "ManagedServiceIdentity",
+                                                            "audience": "https://graph.microsoft.com"
+                                                        }
+                                                    },
+                                                    "runtimeConfiguration": {
+                                                        "contentTransfer": {
+                                                            "transferMode": "Chunked"
+                                                        }
+                                                    }
+                                                },
+                                                "Filter_tasks_by_task_types": {
+                                                    "type": "Query",
+                                                    "inputs": {
+                                                        "from": "@variables('allMrTasks')",
+                                                        "where": "@equals(item()?['incident']?['id'], items('For_each_incident')?['id'])"
+                                                    },
+                                                    "runAfter": {
+                                                        "Get_incident_details": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                },
+                                                "Add_incident_tasks": {
+                                                    "type": "Compose",
+                                                    "inputs": "@addProperty(body('Get_incident_details'),'tasks', body('Filter_tasks_by_task_types'))",
+                                                    "runAfter": {
+                                                        "Filter_tasks_by_task_types": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                },
+                                                "Append_to_incidentsWithTasks": {
+                                                    "type": "AppendToArrayVariable",
+                                                    "inputs": {
+                                                        "name": "incidentsWithTasks",
+                                                        "value": "@outputs('Add_incident_tasks')"
+                                                    },
+                                                    "runAfter": {
+                                                        "Add_incident_tasks": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                }
+                                            },
+                                            "runtimeConfiguration": {
+                                                "concurrency": {
+                                                    "repetitions": 1
+                                                }
+                                            }
+                                        }
+                                    },
+                                    "runAfter": {
+                                        "Set_allIncidentsId": [
+                                            "Succeeded"
+                                        ]
+                                    }
+                                }
+                            },
+                            "runAfter": {
+                                "Initialize_variables": [
+                                    "Succeeded"
+                                ]
+                            }
+                        },
+                        "Notifications": {
+                            "type": "Scope",
+                            "actions": {
+                                "For_each_enriched_incident": {
+                                    "type": "Foreach",
+                                    "foreach": "@variables('incidentsWithTasks')",
+                                    "actions": {
+                                        "Reset_alertsEmailHtml": {
+                                            "type": "SetVariable",
+                                            "inputs": {
+                                                "name": "alertsEmailHtml",
+                                                "value": "Alerts:"
+                                            },
+                                            "runAfter": {}
+                                        },
+                                        "Reset_tasksEmailHtml": {
+                                            "type": "SetVariable",
+                                            "inputs": {
+                                                "name": "tasksEmailHtml",
+                                                "value": "Tasks"
+                                            },
+                                            "runAfter": {
+                                                "Reset_alertsEmailHtml": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        },
+                                        "For_each_alerts_Html": {
+                                            "type": "Foreach",
+                                            "foreach": "@items('For_each_enriched_incident')?['alerts']",
+                                            "runAfter": {
+                                                "Reset_tasksEmailHtml": [
+                                                    "Succeeded"
+                                                ]
+                                            },
+                                            "actions": {
+                                                "Compose_alertsEmailHtml": {
+                                                    "type": "Compose",
+                                                    "inputs": "@concat(\r\n  variables('alertsEmailHtml'),\r\n  '<div style=\"margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #e1dfdd;\">',\r\n    '<div style=\"font-weight:600;font-size:13px;margin-bottom:4px;\">',\r\n      string(item()?['title']),\r\n    '</div>',\r\n    '<div style=\"font-size:12px;color:#605e5c;margin-bottom:4px;\">',\r\n      'Severity: <span style=\"color:',\r\n        if(equals(item()?['severity'], 'high'), '#a4262c',\r\n          if(equals(item()?['severity'], 'medium'), '#986f0b',\r\n            if(equals(item()?['severity'], 'low'), '#107c10', '#323130')\r\n          )\r\n        ),\r\n      ';\">', string(item()?['severity']), '</span>',\r\n      ' &nbsp; | &nbsp; Status: <span style=\"color:',\r\n        if(\r\n          or(equals(item()?['status'], 'active'), equals(item()?['status'], 'new')),\r\n          '#a4262c',\r\n          if(\r\n            equals(item()?['status'], 'inProgress'),\r\n            '#986f0b',\r\n            if(\r\n              or(equals(item()?['status'], 'resolved'), equals(item()?['status'], 'closed')),\r\n              '#107c10',\r\n              '#323130'\r\n            )\r\n          )\r\n        ),\r\n      ';\">', string(item()?['status']), '</span>',\r\n    '</div>',\r\n    '<div style=\"font-size:12px;color:#605e5c;margin-bottom:4px;\">',\r\n      'Created: ', string(item()?['createdDateTime']),\r\n      ' &nbsp; | &nbsp; Product: ', string(item()?['productName']),\r\n    '</div>',\r\n    '<div style=\"font-size:12px;margin-bottom:4px;\">',\r\n      '<a href=\"', string(item()?['alertWebUrl']),\r\n      '\" style=\"color:#6050c5;text-decoration:none;\">Open alert</a>',\r\n    '</div>',\r\n    '<div style=\"font-size:12px;margin-top:4px;\">',\r\n      '<strong>Description:</strong><br/>',\r\n      coalesce(string(item()?['description']), '-'),\r\n    '</div>',\r\n    '<div style=\"font-size:12px;margin-top:4px;\">',\r\n      '<strong>Recommended actions:</strong><br/>',\r\n      coalesce(string(item()?['recommendedActions']), '-'),\r\n    '</div>',\r\n  '</div>'\r\n)\r\n"
+                                                },
+                                                "Set_alertsEmailHtml": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "alertsEmailHtml",
+                                                        "value": "@{outputs('Compose_alertsEmailHtml')}"
+                                                    },
+                                                    "runAfter": {
+                                                        "Compose_alertsEmailHtml": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                }
+                                            },
+                                            "runtimeConfiguration": {
+                                                "concurrency": {
+                                                    "repetitions": 1
+                                                }
+                                            }
+                                        },
+                                        "For_each_tasks_Html": {
+                                            "type": "Foreach",
+                                            "foreach": "@items('For_each_enriched_incident')?['tasks']",
+                                            "actions": {
+                                                "Compose_tasksEmailHtml": {
+                                                    "type": "Compose",
+                                                    "inputs": "@concat(\r\n  variables('tasksEmailHtml'),\r\n  '<div style=\"margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #e1dfdd;\">',\r\n    '<div style=\"font-weight:600;font-size:13px;margin-bottom:4px;\">',\r\n      string(item()?['displayName']),\r\n    '</div>',\r\n    '<div style=\"font-size:12px;color:#605e5c;margin-bottom:4px;\">',\r\n      'Status: <span style=\"color:',\r\n        if(\r\n          or(equals(item()?['status'], 'completed'), equals(item()?['status'], 'done')),\r\n          '#107c10',\r\n          if(\r\n            or(equals(item()?['status'], 'open'), equals(item()?['status'], 'inProgress')),\r\n            '#986f0b',\r\n            if(\r\n              or(equals(item()?['status'], 'failed'), equals(item()?['status'], 'error')),\r\n              '#a4262c',\r\n              '#323130'\r\n            )\r\n          )\r\n        ),\r\n      ';\">', string(item()?['status']), '</span>',\r\n      ' &nbsp; | &nbsp; Modified by: ', string(item()?['lastModifiedByDisplayName']),\r\n      ' &nbsp; | &nbsp; Type: ', string(item()?['actionType']),\r\n    '</div>',\r\n    '<div style=\"font-size:12px;margin-top:4px;\">',\r\n      '<strong>Description:</strong><br/>',\r\n      coalesce(string(item()?['description']), '-'),\r\n    '</div>',\r\n    if(\r\n      equals(item()?['responseAction']?['identifierValue'], null),\r\n      '',\r\n      concat(\r\n        '<div style=\"font-size:12px;margin-top:4px;\">',\r\n        '<strong>Target:</strong> ',\r\n        string(item()?['responseAction']?['identifierValue']),\r\n        '</div>'\r\n      )\r\n    ),\r\n  '</div>'\r\n)\r\n"
+                                                },
+                                                "Set_tasksEmailHtml": {
+                                                    "type": "SetVariable",
+                                                    "inputs": {
+                                                        "name": "tasksEmailHtml",
+                                                        "value": "@{outputs('Compose_tasksEmailHtml')}"
+                                                    },
+                                                    "runAfter": {
+                                                        "Compose_tasksEmailHtml": [
+                                                            "Succeeded"
+                                                        ]
+                                                    }
+                                                }
+                                            },
+                                            "runtimeConfiguration": {
+                                                "concurrency": {
+                                                    "repetitions": 1
+                                                }
+                                            },
+                                            "runAfter": {
+                                                "For_each_alerts_Html": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        },
+                                        "Compose_email": {
+                                            "type": "Compose",
+                                            "inputs": "<html>\n  <body style=\"font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #323130; background-color: #f5f5f5; padding: 16px;\">\n    <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"max-width: 900px; margin: 0 auto; background-color: #ffffff; border-collapse: collapse; border-radius: 8px; overflow: hidden;\">\n\n      <!-- HEADER -->\n      <tr>\n        <td style=\"padding: 16px 20px; background-color: #ede7f6; border-bottom: 1px solid #e1dfdd;\">\n          <div style=\"font-size: 18px; font-weight: 700; margin-bottom: 4px;\">Microsoft Defender Incident</div>\n          <div style=\"font-size: 16px; font-weight: 600; margin-bottom: 4px;\">\n            @{items('For_each_enriched_incident')?['displayName']}\n          </div>\n          <div style=\"font-size: 12px; color: #605e5c; margin-bottom: 4px;\">\n            Incident ID: @{items('For_each_enriched_incident')?['id']}\n          </div>\n          <div style=\"font-size: 12px; margin-top: 4px;\">\n            <a href=\"@{items('For_each_enriched_incident')?['incidentWebUrl']}\"\n               style=\"color: #6050c5; text-decoration: none; font-weight: 600;\">\n              Open incident in Defender\n            </a>\n          </div>\n        </td>\n      </tr>\n\n      <!-- HIGH LEVEL PROPERTIES -->\n      <tr>\n        <td style=\"padding: 16px 20px;\">\n\n          <!-- Severity, Status, Assigned -->\n          <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\">\n            <tr>\n              <td style=\"vertical-align: top; width: 33%; padding-right: 8px;\">\n                <div style=\"font-size: 12px; color: #605e5c; font-weight: 600;\">Severity</div>\n                <div style=\"font-size: 14px; font-weight: 700; color:@{if(equals(items('For_each_enriched_incident')?['severity'], 'high'), '#a4262c', if(equals(items('For_each_enriched_incident')?['severity'], 'medium'), '#986f0b', if(equals(items('For_each_enriched_incident')?['severity'], 'low'), '#107c10', '#323130')))};\">\n                  @{items('For_each_enriched_incident')?['severity']}\n                </div>\n              </td>\n\n              <td style=\"vertical-align: top; width: 33%; padding-right: 8px;\">\n                <div style=\"font-size: 12px; color: #605e5c; font-weight: 600;\">Status</div>\n                <div style=\"font-size: 14px; font-weight: 700; color:@{if(equals(items('For_each_enriched_incident')?['status'], 'active'), '#a4262c', if(equals(items('For_each_enriched_incident')?['status'], 'inProgress'), '#986f0b', if(or(equals(items('For_each_enriched_incident')?['status'], 'resolved'), equals(items('For_each_enriched_incident')?['status'], 'redirected')), '#107c10', '#323130')))};\">\n                  @{items('For_each_enriched_incident')?['status']}\n                </div>\n              </td>\n\n              <td style=\"vertical-align: top; width: 33%;\">\n                <div style=\"font-size: 12px; color: #605e5c; font-weight: 600;\">Assigned to</div>\n                <div style=\"font-size: 14px;\">@{items('For_each_enriched_incident')?['assignedTo']}</div>\n              </td>\n            </tr>\n          </table>\n\n          <!-- Dates & Tags -->\n          <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"margin-top: 12px;\">\n            <tr>\n              <td style=\"vertical-align: top; width: 33%; padding-right: 8px;\">\n                <div style=\"font-size: 12px; color: #605e5c; font-weight: 600;\">Created</div>\n                <div style=\"font-size: 14px;\">@{items('For_each_enriched_incident')?['createdDateTime']}</div>\n              </td>\n\n              <td style=\"vertical-align: top; width: 33%; padding-right: 8px;\">\n                <div style=\"font-size: 12px; color: #605e5c; font-weight: 600;\">Last updated</div>\n                <div style=\"font-size: 14px;\">@{items('For_each_enriched_incident')?['lastUpdateDateTime']}</div>\n              </td>\n\n              <td style=\"vertical-align: top; width: 33%;\">\n                <div style=\"font-size: 12px; color: #605e5c; font-weight: 600;\">Tags</div>\n                <div style=\"font-size: 14px;\">@{join(items('For_each_enriched_incident')?['systemTags'], ', ')}</div>\n              </td>\n            </tr>\n          </table>\n\n        </td>\n      </tr>\n\n      <!-- TASKS MOVED ABOVE SUMMARY -->\n      <tr>\n        <td style=\"padding: 0 20px 16px 20px;\">\n          <div style=\"margin-top: 8px; padding: 12px; background-color: #fff8e1; border-radius: 6px; border-left: 4px solid #ffb900;\">\n            <div style=\"font-size: 13px; font-weight: 700; margin-bottom: 4px; color: #8a2d0a;\">\n              ⚠ Defender Experts pubished the following actions\n            </div>\n\n            <div style=\"font-size: 12px; margin-bottom: 10px; color: #8a2d0a;\">\n              These analyst-driven actions are part of the Defender Experts managed response.\n              Please review them to ensure they align with your policies and operational processes.\n            </div>\n\n            <div style=\"font-size: 13px; line-height: 1.4;\">\n              @{if(equals(variables('tasksEmailHtml'), ''), 'No tasks were performed for this incident.', variables('tasksEmailHtml'))}\n            </div>\n          </div>\n        </td>\n      </tr>\n\n      <!-- SUMMARY NOW BELOW TASKS -->\n      <tr>\n        <td style=\"padding: 0 20px 16px 20px;\">\n          <div style=\"margin-top: 8px; padding: 12px; background-color: #f3f2f1; border-radius: 6px;\">\n            <div style=\"font-size: 13px; font-weight: 700; margin-bottom: 6px;\">\n              Summary\n            </div>\n            <div style=\"font-size: 13px; line-height: 1.4;\">\n              @{items('For_each_enriched_incident')?['summary']}\n            </div>\n          </div>\n        </td>\n      </tr>\n\n      <!-- ALERTS (unchanged, still after summary) -->\n      <tr>\n        <td style=\"padding: 0 20px 20px 20px;\">\n          <div style=\"margin-top: 8px; padding: 12px; background-color: #f3f2f1; border-radius: 6px;\">\n            <div style=\"font-size: 13px; font-weight: 700; margin-bottom: 6px;\">\n              Related alerts\n            </div>\n\n            <div style=\"font-size: 13px; line-height: 1.4;\">\n              @{if(equals(variables('alertsEmailHtml'), ''), 'No alerts for this incident.', variables('alertsEmailHtml'))}\n            </div>\n          </div>\n        </td>\n      </tr>\n\n    </table>\n  </body>\n</html>\n",
+                                            "runAfter": {
+                                                "For_each_tasks_Html": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        },
+                                        "Send_email": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                                "host": {
+                                                    "connection": {
+                                                        "name": "@parameters('$connections')['office365']['connectionId']"
+                                                    }
+                                                },
+                                                "method": "post",
+                                                "body": {
+                                                    "To": "@{variables('notificationEmail')}",
+                                                    "Subject": "@{items('For_each_enriched_incident')?['id']} - @{items('For_each_enriched_incident')?['displayName']}",
+                                                    "Body": "<p class=\"editor-paragraph\">@{outputs('Compose_email')}</p>",
+                                                    "Importance": "High"
+                                                },
+                                                "path": "/v2/Mail"
+                                            },
+                                            "runAfter": {
+                                                "Compose_email": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        },
+                                        "Create_Record": {
+                                            "type": "ApiConnection",
+                                            "inputs": {
+                                                "host": {
+                                                    "connection": {
+                                                        "name": "@parameters('$connections')['service-now']['connectionId']"
+                                                    }
+                                                },
+                                                "method": "post",
+                                                "body": {
+                                                    "short_description": "@items('For_each_enriched_incident')?['displayName']",
+                                                    "description": "Defender Experts published tasks for incident @{items('For_each_enriched_incident')?['id']}\nSeverity: @{items('For_each_enriched_incident')?['severity']}\nURL: @{items('For_each_enriched_incident')?['incidentWebUrl']}\n\nInvestigation summary:\n@{items('For_each_enriched_incident')?['summary']}\n\n\nTasks:\n@{items('For_each_enriched_incident')?['tasks']}",
+                                                    "correlation_id": "@items('For_each_enriched_incident')?['id']"
+                                                },
+                                                "path": "/api/now/v2/table/@{encodeURIComponent('incident')}",
+                                                "queries": {
+                                                    "sysparm_display_value": false,
+                                                    "sysparm_exclude_reference_link": true
+                                                }
+                                            },
+                                            "runAfter": {
+                                                "Send_email": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        },
+                                        "Insert_new_tasks_in_storage": {
+                                            "type": "Foreach",
+                                            "foreach": "@items('For_each_enriched_incident')?['tasks']",
+                                            "actions": {
+                                                "Insert_Task_Entity": {
+                                                    "type": "ApiConnection",
+                                                    "inputs": {
+                                                        "host": {
+                                                            "connection": {
+                                                                "name": "@parameters('$connections')['azuretables']['connectionId']"
+                                                            }
+                                                        },
+                                                        "method": "post",
+                                                        "body": {
+                                                            "PartitionKey": "@{string(item()?['incident']?['id'])}",
+                                                            "RowKey": "@{string(item()?['id'])}",
+                                                            "IncidentId": "@{string(item()?['incident']?['id'])}",
+                                                            "TaskId": "@{string(item()?['id'])}",
+                                                            "TaskSource": "@{string(item()?['source'])}",
+                                                            "ActionType": "@{string(item()?['actionType'])}",
+                                                            "Status": "completed",
+                                                            "LogicAppName": "@{workflow().name}",
+                                                            "LogicAppRunId": "@{workflow().run.name}",
+                                                            "FirstNotifiedUtc": "@{utcNow()}",
+                                                            "LastUpdatedUtc": "@{utcNow()}"
+                                                        },
+                                                        "path": "/v2/storageAccounts/@{encodeURIComponent(encodeURIComponent(parameters('storageAccountName')))}/tables/@{encodeURIComponent('DefenderIncidentTasksProcessed')}/entities"
+                                                    }
+                                                }
+                                            },
+                                            "runtimeConfiguration": {
+                                                "concurrency": {
+                                                    "repetitions": 1
+                                                }
+                                            },
+                                            "runAfter": {
+                                                "Create_Record": [
+                                                    "Succeeded"
+                                                ]
+                                            }
+                                        }
+                                    },
+                                    "runtimeConfiguration": {
+                                        "concurrency": {
+                                            "repetitions": 1
+                                        }
+                                    }
+                                }
+                            },
+                            "runAfter": {
+                                "Get_incidents_details": [
+                                    "Succeeded"
+                                ]
+                            }
+                        },
+                        "Catch": {
+                            "type": "Scope",
+                            "actions": {
+                                "Compose_ErrorMessage": {
+                                    "type": "Compose",
+                                    "inputs": "Workflow: @{workflow().name}\nRun ID: @{workflow().run.id}\n\nFailed action:\n@{result('Get_incidents_details')}\n\n\n"
+                                },
+                                "Send_error_email": {
+                                    "type": "ApiConnection",
+                                    "inputs": {
+                                        "host": {
+                                            "connection": {
+                                                "name": "@parameters('$connections')['office365']['connectionId']"
+                                            }
+                                        },
+                                        "method": "post",
+                                        "body": {
+                                            "To": "@{variables('notificationEmail')}",
+                                            "Subject": "Playbook execution failure ",
+                                            "Body": "<p class=\"editor-paragraph\">Defender Experts managed responses playbook failed:</p><br><p class=\"editor-paragraph\">@{outputs('Compose_ErrorMessage')}</p>",
+                                            "Importance": "Normal"
+                                        },
+                                        "path": "/v2/Mail"
+                                    },
+                                    "runAfter": {
+                                        "Compose_ErrorMessage": [
+                                            "Succeeded"
+                                        ]
+                                    }
+                                },
+                                "Terminate_Failed": {
+                                    "type": "Terminate",
+                                    "inputs": {
+                                        "runStatus": "Failed",
+                                        "runError": {
+                                            "code": "Failed",
+                                            "message": "@{outputs('Compose_ErrorMessage')}"
+                                        }
+                                    },
+                                    "runAfter": {
+                                        "Send_error_email": [
+                                            "Succeeded"
+                                        ]
+                                    }
+                                }
+                            },
+                            "runAfter": {
+                                "Get_incidents_details": [
+                                    "Failed",
+                                    "TimedOut"
+                                ]
+                            }
+                        }
+                    },
+                    "outputs": {},
+                    "parameters": {
+                        "storageAccountName": {
+                            "defaultValue": "",
+                            "type": "String"
+                        },
+                        "$connections": {
+                            "type": "Object",
+                            "defaultValue": {}
+                        }
+                    }
+                },
+                "parameters": {
+                    "storageAccountName": {
+                        "value": "[parameters('storageAccountName')]"
+                    },
+                    "$connections": {
+                        "value": {
+                            "azuretables": {
+                                "connectionId": "[resourceId('Microsoft.Web/connections', parameters('azureTablesConnectionName'))]",
+                                "connectionName": "[parameters('azureTablesConnectionName')]",
+                                "id": "[variables('azureTablesApiId')]",
+                                "connectionProperties": {
+                                    "authentication": {
+                                        "type": "ManagedServiceIdentity"
+                                    }
+                                }
+                            },
+                            "office365": {
+                                "connectionId": "[resourceId('Microsoft.Web/connections', parameters('office365ConnectionName'))]",
+                                "connectionName": "[parameters('office365ConnectionName')]",
+                                "id": "[variables('office365ApiId')]"
+                            },
+                            "service-now": {
+                                "connectionId": "[resourceId('Microsoft.Web/connections', parameters('serviceNowConnectionName'))]",
+                                "connectionName": "[parameters('serviceNowConnectionName')]",
+                                "id": "[variables('serviceNowApiId')]"
+                            }
+                        }
+                    }
+                }
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Web/connections', parameters('azureTablesConnectionName'))]",
+                "[resourceId('Microsoft.Web/connections', parameters('office365ConnectionName'))]",
+                "[resourceId('Microsoft.Web/connections', parameters('serviceNowConnectionName'))]"
+            ]
+        }
+    ]
+}
