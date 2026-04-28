@@ -368,3 +368,73 @@ The base `$filter` portion is stored as a workflow variable in `Initialize_varia
 - **Idempotency:** each `(incidentId, taskId)` is recorded in `DefenderIncidentTasksProcessed`.
 - **Overlapping window:** the 15-minute overlap reduces risk of missing tasks during transient failures.
 - **Least privilege:** start with `SecurityIncident.Read.All` and only add other roles if needed.
+
+## FAQ
+
+### How can I review which tasks were saved in the Storage Account?
+
+Processed tasks are stored in the Azure Table `DefenderIncidentTasksProcessed` in your Storage Account.
+
+Azure portal:
+
+1. Open your **Storage account**.
+2. Go to **Storage browser**.
+3. Open **Tables** → **DefenderIncidentTasksProcessed**.
+4. Review entities:
+
+- `PartitionKey` = incident id
+- `RowKey` = task id
+- `Status` = `completed`
+- `LogicAppRunId`, `FirstNotifiedUtc`, `LastUpdatedUtc` for auditing
+
+If you prefer a richer experience for filtering/exporting, you can also use **Azure Storage Explorer**.
+
+### How do I force the Logic App to “re-process” a task and recreate the ServiceNow record?
+
+The workflow de-duplicates based on the row in `DefenderIncidentTasksProcessed`. If the row exists with `Status` set to `completed`, the task will be skipped on later runs.
+
+To re-process:
+
+1. In the Storage Account → **Storage browser** → **Tables** → `DefenderIncidentTasksProcessed`, find the entity for the task.
+2. Either:
+
+- **Delete** the entity (simplest), or
+- Change the entity `Status` to something other than `completed` (advanced; only if your tooling allows editing)
+
+3. Ensure the task will be returned again by the Graph query:
+
+- The workflow only queries tasks changed in the last **15 minutes** by default.
+- Temporarily widen the time window by editing the Logic App action `Compose_TimeWindowStart` from `addMinutes(utcNow(), -15)` to a larger value (for example `-60` or `-240`).
+
+4. Run the Logic App again (manual run) and confirm the ServiceNow action executes.
+
+> Tip: After re-processing, set the time window back to 15 minutes to avoid unnecessary Graph reads.
+
+### Why didn’t I receive any notifications?
+
+Common causes:
+
+- The Logic App is still **Disabled**.
+- Microsoft Graph permissions are missing (403 from Graph). Re-check the app-role assignments to the Logic App managed identity.
+- The time window is too small for the scenario (the task’s `lastModifiedDateTime` is older than 15 minutes).
+- The base filter is too restrictive (or not restrictive enough). Update the `incidentTasksBaseFilter` variable in the workflow.
+
+### I’m getting 403s from Azure Tables actions
+
+Confirm the role assignment:
+
+- Storage Account → **Access Control (IAM)** → the Logic App managed identity has **Storage Table Data Contributor** at the Storage Account scope.
+
+Role assignment propagation can take a few minutes.
+
+### How do I change the polling interval?
+
+Edit the **Recurrence** trigger in the Logic App (or update the ARM template) to change the interval/frequency.
+
+### How can I reduce noise and only pick up Defender Experts managed-response tasks?
+
+Update the `incidentTasksBaseFilter` variable to include the conditions you care about (for example `source eq 'defenderExpertsGuidedResponse'` and `actionType eq 'text'`).
+
+### How do I map MITRE tactics/techniques into ServiceNow?
+
+MITRE fields can be present on alerts (and the exact property names can vary by alert type). Use the Logic App run history to inspect a sample enriched incident and confirm which alert properties exist (for example `mitreTechniques`, `mitreTactics`), then aggregate them across the `alerts` array and map into your ServiceNow fields.
